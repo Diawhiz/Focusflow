@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Focusflow",
+    "name": "FocusFlow",
     "slug": "Focusflow",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "sdkVersion": "54.0.0",
     "updates": {
       "enabled": false
@@ -14,13 +14,13 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0A0A0A"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.Focusflow"
+      "bundleIdentifier": "com.diawhiz.Focusflow"
     },
     "android": {
       "adaptiveIcon": {
@@ -29,7 +29,7 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.anonymous.Focusflow"
+      "package": "com.diawhiz.Focusflow"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -37,6 +37,11 @@
     "plugins": [
       "expo-asset",
       "expo-localization"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b9791130-2ac0-474a-ad1f-4493614e273d"
+      }
+    }
   }
 }
