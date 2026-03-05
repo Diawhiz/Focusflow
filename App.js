@@ -1,187 +1,287 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, SafeAreaView, Alert } from 'react-native';
-import { Audio } from 'expo-av';
+import { 
+  StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, 
+  KeyboardAvoidingView, Platform, useColorScheme, Alert 
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { useAppStore } from './store';
-
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+import * as Clipboard from 'expo-clipboard';
+import { Audio } from 'expo-av';
+import { 
+  CheckCircle, Circle, Flame, Moon, Sun, Plus, Trash2, Copy, Save, Eraser
+} from 'lucide-react-native';
 
 export default function App() {
-  const store = useAppStore();
-  const [newTodo, setNewTodo] = useState('');
-  const [currentNote, setCurrentNote] = useState('');
-  
-  // Calculate current progress percentage
-  const progress = store.getProgress();
+  const systemTheme = useColorScheme();
+  const [isDark, setIsDark] = useState(systemTheme === 'dark');
+  const theme = isDark ? darkTheme : lightTheme;
 
-  async function playSound() {
-    try {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: 'https://www.soundjay.com/buttons/sounds/button-10.mp3' } 
-      );
-      await sound.playAsync();
-    } catch (error) {
-      console.log("Sound error:", error);
-    }
-  }
+  // --- ALL STATE ---
+  const [inputText, setInputText] = useState('');
+  const [newNote, setNewNote] = useState('');
+  const [journalText, setJournalText] = useState('');
+  const [tasks, setTasks] = useState([]);
+  const [habits, setHabits] = useState([]);
 
+  // --- LOAD DATA ON START ---
   useEffect(() => {
-    (async () => {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') {
-        alert('Enable notifications for reminders!');
-      }
-    })();
+    const loadAllData = async () => {
+      try {
+        const savedTasks = await AsyncStorage.getItem('tasks');
+        const savedHabits = await AsyncStorage.getItem('habits');
+        const savedJournal = await AsyncStorage.getItem('journal');
+        
+        if (savedTasks) setTasks(JSON.parse(savedTasks));
+        if (savedJournal) setJournalText(savedJournal);
+        
+        if (savedHabits) {
+          let parsedHabits = JSON.parse(savedHabits);
+          const today = new Date().toDateString();
+          // Reset habits for the new day
+          const updated = parsedHabits.map(h => 
+            h.lastResetDate !== today ? { ...h, completed: false, lastResetDate: today } : h
+          );
+          setHabits(updated);
+        }
+      } catch (e) { console.log("Load Error"); }
+    };
+    loadAllData();
   }, []);
 
-  const scheduleReminder = async () => {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "Focusflow Reminder 🎯",
-        body: "Check your habits and finish your progress bar!",
-      },
-      trigger: { seconds: 5 }, 
+  // --- SOUND LOGIC ---
+  const playSuccessSound = async () => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(require('./assets/success.wav'));
+      await sound.playAsync();
+    } catch (e) { console.log("Success sound missing"); }
+  };
+
+  const playUndoSound = async () => {
+    try {
+      // If you don't have undo.mp3 yet, this will fail safely without crashing
+      const { sound } = await Audio.Sound.createAsync(require('./assets/shame-1.mp3'));
+      await sound.playAsync();
+    } catch (e) { console.log("Undo sound file missing in assets"); }
+  };
+
+  // --- PROGRESS CALCULATION ---
+  const totalItems = tasks.length + habits.length;
+  const completedItems = tasks.filter(t => t.completed).length + habits.filter(h => h.completed).length;
+  const progress = totalItems === 0 ? 0 : (completedItems / totalItems) * 100;
+
+  // --- HANDLERS ---
+  const handleCreate = async (type) => {
+    if (!inputText.trim()) return;
+    const cleanContent = inputText.trim();
+
+    if (type === 'task') {
+      const updated = [...tasks, { id: Date.now(), text: cleanContent, completed: false }];
+      setTasks(updated);
+      await AsyncStorage.setItem('tasks', JSON.stringify(updated));
+    } else {
+      const updated = [...habits, { 
+        id: Date.now(), text: cleanContent, completed: false, streak: 0, 
+        lastResetDate: new Date().toDateString(), lastCompletedDate: '' 
+      }];
+      setHabits(updated);
+      await AsyncStorage.setItem('habits', JSON.stringify(updated));
+    }
+    // FIX: Input reset happens after storage is set
+    setInputText(''); 
+  };
+
+  const toggleHabit = async (id) => {
+    const today = new Date().toDateString();
+    const yesterday = new Date(); 
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const updated = habits.map(h => {
+      if (h.id === id && !h.completed) {
+        playSuccessSound();
+        const isContinuous = h.lastCompletedDate === yesterday.toDateString();
+        return { ...h, completed: true, streak: isContinuous ? h.streak + 1 : 1, lastCompletedDate: today };
+      }
+      return h;
     });
-    Alert.alert("Reminder Set", "Notification in 5 seconds!");
+    setHabits(updated);
+    await AsyncStorage.setItem('habits', JSON.stringify(updated));
+  };
+
+  const undoHabit = async (id) => {
+    playUndoSound();
+    const updated = habits.map(h => 
+      h.id === id ? { ...h, completed: false, streak: Math.max(0, h.streak - 1) } : h
+    );
+    setHabits(updated);
+    await AsyncStorage.setItem('habits', JSON.stringify(updated));
+    Alert.alert("Undo", "Habit status reversed.");
+  };
+
+  const toggleTask = async (id) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task.completed) playSuccessSound(); else playUndoSound();
+    
+    const updated = tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+    setTasks(updated);
+    await AsyncStorage.setItem('tasks', JSON.stringify(updated));
+  };
+
+  const deleteItem = async (id, type) => {
+    playUndoSound();
+    if (type === 'task') {
+      const updated = tasks.filter(t => t.id !== id);
+      setTasks(updated);
+      await AsyncStorage.setItem('tasks', JSON.stringify(updated));
+    } else {
+      const updated = habits.filter(h => h.id !== id);
+      setHabits(updated);
+      await AsyncStorage.setItem('habits', JSON.stringify(updated));
+    }
+  };
+
+  // --- JOURNAL LOGIC ---
+  const saveJournalEntry = async () => {
+    if (!newNote.trim()) return;
+    const timestamp = new Date().toLocaleString();
+    const updated = journalText ? `${journalText}\n\n--- ${timestamp} ---\n${newNote}` : `--- ${timestamp} ---\n${newNote}`;
+    setJournalText(updated);
+    setNewNote('');
+    await AsyncStorage.setItem('journal', updated);
+    playSuccessSound();
+  };
+
+  const copyCleanJournal = async () => {
+    if (!journalText) return;
+    // FIX: Removes timestamps like "--- 3/5/2026, 3:00 PM ---" from the clipboard string
+    const cleanText = journalText.replace(/--- .*? ---/g, '').trim();
+    await Clipboard.setStringAsync(cleanText);
+    Alert.alert("Copied", "Journal history copied (dates hidden)!");
+  };
+
+  const clearJournal = () => {
+    Alert.alert("Clear Journal", "Delete all entries permanently?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: async () => {
+        setJournalText('');
+        await AsyncStorage.removeItem('journal');
+        playUndoSound();
+      }}
+    ]);
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Focusflow</Text>
-          <TouchableOpacity onPress={scheduleReminder} style={styles.bellBtn}>
-            <Text>🔔</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* PROGRESS BAR */}
-        <View style={styles.progressSection}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.label}>Today's Focus</Text>
-            <Text style={styles.progressText}>{Math.round(progress * 100)}%</Text>
+    <View style={[styles.container, { backgroundColor: theme.bg }]}>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
+        <ScrollView style={styles.scroll} nestedScrollEnabled={true}>
+          
+          <View style={styles.header}>
+            <View>
+              <Text style={[styles.title, { color: theme.text }]}>FocusFlow</Text>
+              <Text style={{color: '#888'}}>Keep pushing forward.</Text>
+            </View>
+            <TouchableOpacity onPress={() => setIsDark(!isDark)} style={styles.iconBtn}>
+              {isDark ? <Sun color="#F6B93B" size={26} /> : <Moon color="#55BCF6" size={26} />}
+            </TouchableOpacity>
           </View>
-          <View style={styles.progressBarBg}>
-            <View style={[styles.progressBarFill, { width: `${progress * 100}%` }]} />
+
+          {/* PROGRESS */}
+          <View style={styles.progressContainer}>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
+            </View>
+            <Text style={[styles.progressText, {color: theme.text}]}>{Math.round(progress)}% Daily Progress</Text>
           </View>
-        </View>
-        
-        {/* HABITS SECTION */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Habits(Long press to undo)</Text>
-          {store.habits.map(h => (
-            <View key={h.id} style={styles.itemRow}>
-              <TouchableOpacity 
-                onLongPress={() => { store.undoHabit(h.id); playSound(); }}
-                onPress={() => { store.toggleHabit(h.id); playSound(); }} 
-                style={[styles.card, h.lastCompleted === new Date().toISOString().split('T')[0] && styles.done]}
-              >
-                <Text style={styles.cardText}>{h.title} (🔥 {h.streak})</Text>
+
+          <Text style={styles.sectionHeader}>Habits (Hold to Undo)</Text>
+          {habits.map(h => (
+            <TouchableOpacity 
+              key={h.id} 
+              onPress={() => !h.completed && toggleHabit(h.id)} 
+              onLongPress={() => h.completed && undoHabit(h.id)}
+              style={[styles.card, { backgroundColor: theme.card }]}
+            >
+              <Flame size={20} color={h.completed ? "#FF4500" : "#888"} />
+              <Text style={[styles.cardText, { color: theme.text, textDecorationLine: h.completed ? 'line-through' : 'none' }]}>{h.text}</Text>
+              <Text style={{color: '#888', marginRight: 10, fontWeight: 'bold'}}>{h.streak}🔥</Text>
+              <TouchableOpacity onPress={() => deleteItem(h.id, 'habit')}><Trash2 size={18} color="#FF5252" /></TouchableOpacity>
+            </TouchableOpacity>
+          ))}
+
+          <Text style={styles.sectionHeader}>Tasks</Text>
+          {tasks.filter(t => !t.completed).map(t => (
+            <TouchableOpacity key={t.id} onPress={() => toggleTask(t.id)} style={[styles.card, { backgroundColor: theme.card }]}>
+              <Circle size={20} color="#55BCF6" />
+              <Text style={[styles.cardText, { color: theme.text }]}>{t.text}</Text>
+              <TouchableOpacity onPress={() => deleteItem(t.id, 'task')}><Trash2 size={18} color="#FF5252" /></TouchableOpacity>
+            </TouchableOpacity>
+          ))}
+
+          {tasks.some(t => t.completed) && <Text style={[styles.sectionHeader, { color: '#888' }]}>Completed</Text>}
+          {tasks.filter(t => t.completed).map(t => (
+            <TouchableOpacity key={t.id} onPress={() => toggleTask(t.id)} style={[styles.card, { backgroundColor: theme.card, opacity: 0.5 }]}>
+              <CheckCircle size={20} color="#7ED321" />
+              <Text style={[styles.cardText, { color: theme.text, textDecorationLine: 'line-through' }]}>{t.text}</Text>
+              <TouchableOpacity onPress={() => deleteItem(t.id, 'task')}><Trash2 size={18} color="#FF5252" /></TouchableOpacity>
+            </TouchableOpacity>
+          ))}
+
+          <Text style={styles.sectionHeader}>Journal Log</Text>
+          <View style={[styles.journalBox, { backgroundColor: theme.card }]}>
+            <ScrollView style={{maxHeight: 180}} nestedScrollEnabled={true}>
+              <Text style={{ color: theme.text, fontSize: 14, lineHeight: 20 }}>{journalText || "No logs yet."}</Text>
+            </ScrollView>
+            <View style={styles.journalActions}>
+              <TouchableOpacity onPress={copyCleanJournal} style={styles.actionBtn}>
+                <Copy size={16} color="#55BCF6" /><Text style={styles.actionTxt}>Copy Clean</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => store.deleteHabit(h.id)} style={styles.delBtn}>
-                <Text style={styles.delText}>✕</Text>
+              <TouchableOpacity onPress={clearJournal} style={styles.actionBtn}>
+                <Eraser size={16} color="#FF5252" /><Text style={[styles.actionTxt, {color: '#FF5252'}]}>Clear All</Text>
               </TouchableOpacity>
             </View>
-          ))}
-          <TextInput 
-            style={styles.input} 
-            placeholder="+ New Habit" 
-            onSubmitEditing={(e) => { store.addHabit(e.nativeEvent.text); e.currentTarget.clear(); }}
-          />
-        </View>
+          </View>
 
-        {/* TODO SECTION */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Tasks</Text>
-          {store.todos.map(t => (
-            <View key={t.id} style={styles.itemRow}>
-              <TouchableOpacity onPress={() => { store.toggleTodo(t.id); playSound(); }} style={styles.todo}>
-                <View style={[styles.circle, t.completed && styles.circleFilled]} />
-                <Text style={[styles.todoText, t.completed && styles.strike]}>{t.task}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => store.deleteTodo(t.id)}>
-                <Text style={styles.delText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-          <TextInput 
-            style={styles.input} 
-            placeholder="Add a task..." 
-            value={newTodo}
-            onChangeText={setNewTodo}
-            onSubmitEditing={() => { if(newTodo) { store.addTodo(newTodo); setNewTodo(''); } }}
-          />
-        </View>
+          <View style={[styles.noteInputWrapper, { backgroundColor: theme.card }]}>
+            <TextInput multiline placeholder="Log a note..." placeholderTextColor="#888" style={[styles.noteInput, { color: theme.text }]} value={newNote} onChangeText={setNewNote} />
+            <TouchableOpacity onPress={saveJournalEntry} style={styles.saveBtn}><Save color="white" size={20} /></TouchableOpacity>
+          </View>
+          <View style={{height: 120}} />
+        </ScrollView>
 
-        {/* JOURNAL SECTION */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Journal</Text>
-          <TextInput 
-            style={styles.journalInput} 
-            multiline 
-            placeholder="What's on your mind?" 
-            value={currentNote}
-            onChangeText={setCurrentNote}
-          />
-          <TouchableOpacity 
-            onPress={() => { store.saveNote(currentNote); setCurrentNote(''); playSound(); }} 
-            style={styles.saveBtn}
-          >
-            <Text style={styles.saveBtnText}>Save Entry</Text>
-          </TouchableOpacity>
-
-          {store.notes.map(n => (
-            <View key={n.id} style={styles.noteCard}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.noteDate}>{n.date}</Text>
-                <Text style={styles.noteText}>{n.text}</Text>
-              </View>
-              <TouchableOpacity onPress={() => store.deleteNote(n.id)}>
-                <Text style={styles.delText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
+        {/* INPUT BAR */}
+        <View style={[styles.inputBar, { backgroundColor: theme.card }]}>
+          <TextInput style={[styles.mainInput, { backgroundColor: theme.bg, color: theme.text }]} placeholder="New goal..." placeholderTextColor="#888" value={inputText} onChangeText={setInputText} />
+          <TouchableOpacity onPress={() => handleCreate('task')} style={[styles.addBtn, {backgroundColor: '#55BCF6'}]}><Text style={styles.btnTxt}>Task</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => handleCreate('habit')} style={[styles.addBtn, {backgroundColor: '#FF4500', marginLeft: 8}]}><Text style={styles.btnTxt}>Habit</Text></TouchableOpacity>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
+const lightTheme = { bg: '#F8F9FA', text: '#1A1A1A', card: '#FFFFFF' };
+const darkTheme = { bg: '#0F0F0F', text: '#FFFFFF', card: '#1C1C1E' };
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
-  content: { padding: 25 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  title: { fontSize: 32, fontWeight: '900', color: '#1A1A1A' },
-  bellBtn: { backgroundColor: '#E0E0E0', padding: 8, borderRadius: 10 },
-  progressSection: { marginBottom: 30, backgroundColor: '#FFF', padding: 20, borderRadius: 20, elevation: 2 },
-  progressHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  progressText: { fontWeight: 'bold', color: '#007AFF' },
-  progressBarBg: { height: 10, backgroundColor: '#EEE', borderRadius: 5, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#007AFF' },
-  section: { marginBottom: 35 },
-  label: { fontSize: 12, fontWeight: 'bold', color: '#999', textTransform: 'uppercase', marginBottom: 12 },
-  itemRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  card: { flex: 1, backgroundColor: '#FFF', padding: 18, borderRadius: 15, elevation: 3 },
-  done: { backgroundColor: '#D4EDDA' },
-  cardText: { fontSize: 16, fontWeight: '600' },
-  delBtn: { marginLeft: 15, padding: 5 },
-  delText: { color: '#FF5252', fontSize: 20, fontWeight: 'bold' },
-  todo: { flex: 1, flexDirection: 'row', alignItems: 'center' },
-  circle: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#007AFF', marginRight: 12 },
-  circleFilled: { backgroundColor: '#007AFF' },
-  todoText: { fontSize: 16 },
-  strike: { textDecorationLine: 'line-through', color: '#BBB' },
-  input: { borderBottomWidth: 1, borderColor: '#DDD', paddingVertical: 10, marginTop: 5 },
-  journalInput: { backgroundColor: '#FFF', borderRadius: 15, padding: 15, height: 80, textAlignVertical: 'top' },
-  saveBtn: { backgroundColor: '#007AFF', padding: 15, borderRadius: 12, marginTop: 10, alignItems: 'center' },
-  saveBtnText: { color: '#FFF', fontWeight: 'bold' },
-  noteCard: { backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginTop: 10, flexDirection: 'row', alignItems: 'center' },
-  noteDate: { fontSize: 10, color: '#AAA' },
-  noteText: { fontSize: 14, color: '#333' }
+  container: { flex: 1 },
+  scroll: { padding: 20 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 50, marginBottom: 20 },
+  title: { fontSize: 32, fontWeight: '900' },
+  progressContainer: { marginBottom: 20 },
+  progressBarBg: { height: 8, backgroundColor: '#E0E0E0', borderRadius: 4, overflow: 'hidden' },
+  progressBarFill: { height: '100%', backgroundColor: '#7ED321' },
+  progressText: { fontSize: 12, fontWeight: 'bold', marginTop: 5, alignSelf: 'flex-end' },
+  sectionHeader: { fontSize: 11, fontWeight: 'bold', color: '#55BCF6', marginTop: 25, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 },
+  card: { flexDirection: 'row', alignItems: 'center', padding: 15, borderRadius: 18, marginBottom: 10, elevation: 3 },
+  cardText: { flex: 1, marginLeft: 15, fontSize: 16 },
+  journalBox: { padding: 15, borderRadius: 18, marginBottom: 15 },
+  journalActions: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 15, borderTopWidth: 0.5, borderTopColor: '#444', paddingTop: 10 },
+  actionBtn: { flexDirection: 'row', alignItems: 'center' },
+  actionTxt: { color: '#55BCF6', marginLeft: 5, fontWeight: 'bold', fontSize: 13 },
+  noteInputWrapper: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 15 },
+  noteInput: { flex: 1, minHeight: 40 },
+  saveBtn: { backgroundColor: '#7ED321', padding: 10, borderRadius: 10 },
+  inputBar: { flexDirection: 'row', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20 },
+  mainInput: { flex: 1, padding: 12, borderRadius: 12, marginRight: 8 },
+  addBtn: { paddingHorizontal: 15, height: 45, borderRadius: 12, justifyContent: 'center' },
+  btnTxt: { color: 'white', fontWeight: 'bold' }
 });
